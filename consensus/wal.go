@@ -1,6 +1,8 @@
 package consensus
 
 import (
+	"encoding/binary"
+	"fmt"
 	"hash/crc32"
 	"time"
 
@@ -14,10 +16,8 @@ import (
 // types and functions for savings consensus messages
 
 type TimedWALMessage struct {
-	Time    time.Time  `json:"time"` // for debugging purposes
-	CRC     uint32     `json:"crc"`
-	MsgSize uint32     `json:"msg_size"`
-	Msg     WALMessage `json:"msg"`
+	Time time.Time  `json:"time"` // for debugging purposes
+	Msg  WALMessage `json:"msg"`
 }
 
 type WALMessage interface{}
@@ -77,6 +77,7 @@ func (wal *WAL) Save(wmsg WALMessage) {
 	if wal == nil {
 		return
 	}
+
 	if wal.light {
 		// in light mode we only write new steps, timeouts, and our own votes (no proposals, block parts)
 		if mi, ok := wmsg.(msgInfo); ok {
@@ -85,15 +86,10 @@ func (wal *WAL) Save(wmsg WALMessage) {
 			}
 		}
 	}
+
 	// Write the wal message
-	innerMsgBytes := wire.JSONBytes(wmsg)
-	crc := crc32.Checksum(innerMsgBytes, crc32c)
-	wmsgSize := uint32(len(innerMsgBytes))
-	var wmsgBytes = wire.JSONBytes(TimedWALMessage{time.Now(), crc, wmsgSize, wmsg})
-	err := wal.group.WriteLine(string(wmsgBytes))
-	if err != nil {
-		cmn.PanicQ(cmn.Fmt("Error writing msg to consensus wal. Error: %v \n\nMessage: %v", err, wmsg))
-	}
+	wal.save(wire.BinaryBytes(TimedWALMessage{time.Now(), wmsg}))
+
 	// TODO: only flush when necessary
 	if err := wal.group.Flush(); err != nil {
 		cmn.PanicQ(cmn.Fmt("Error flushing consensus wal buf to file. Error: %v \n", err))
@@ -101,10 +97,31 @@ func (wal *WAL) Save(wmsg WALMessage) {
 }
 
 func (wal *WAL) writeEndHeight(height int) {
-	wal.group.WriteLine(cmn.Fmt("#ENDHEIGHT: %v", height))
+	wal.save([]byte(fmt.Sprintf("#ENDHEIGHT: %v", height)))
 
 	// TODO: only flush when necessary
 	if err := wal.group.Flush(); err != nil {
 		cmn.PanicQ(cmn.Fmt("Error flushing consensus wal buf to file. Error: %v \n", err))
+	}
+}
+
+// save prepends msg with checksum and length header, then writes msg to WAL.
+// It panics if write fails or number of bytes written is less than given.
+func (wal *WAL) save(msg []byte) {
+	crc := crc32.Checksum(msg, crc32c)
+	length := uint32(len(msg))
+	totalLength := 8 + int(length)
+
+	bytes := make([]byte, totalLength)
+	binary.BigEndian.PutUint32(bytes[0:4], crc)
+	binary.BigEndian.PutUint32(bytes[4:8], length)
+	copy(bytes[8:], msg)
+
+	n, err := wal.group.Write(bytes)
+	if err != nil {
+		cmn.PanicQ(cmn.Fmt("Error writing msg to consensus wal: %v \n\nMessage: %v", err, msg))
+	}
+	if n < totalLength {
+		cmn.PanicQ(cmn.Fmt("Error writing msg to consensus wal: wanted to write %d bytes, but wrote %d \n\nMessage: %v", totalLength, n, msg))
 	}
 }

@@ -23,11 +23,11 @@ DIR_TO_COPY=$HOME/.tendermint_test/consensus_state_test
 TMHOME="$HOME/.tendermint"
 rm -rf "$TMHOME"
 cp -r "$DIR_TO_COPY" "$TMHOME"
-cp "$TMHOME/config.toml" "$TMHOME/config.toml.bak"
+cp "$TMHOME/genesis.json" "$TMHOME/genesis.json.bak"
 
 function reset(){
 	tendermint unsafe_reset_all
-	cp "$TMHOME/config.toml.bak" "$TMHOME/config.toml"
+	cp "$TMHOME/genesis.json.bak" "$TMHOME/genesis.json"
 }
 
 reset
@@ -39,7 +39,7 @@ function empty_block(){
 	killall tendermint
 
 	# /q would print up to and including the match, then quit.
-	# /q doesn't include the match.
+	# /Q doesn't include the match.
 	# http://unix.stackexchange.com/questions/11305/grep-show-all-the-file-up-to-the-match
 	sed -e "/ENDHEIGHT: 1/Q" ~/.tendermint/data/cs.wal/wal > consensus/test_data/empty_block.cswal
 
@@ -78,7 +78,8 @@ function small_block1(){
 
 # small block 2 (part size = 64)
 function small_block2(){
-	echo -e "\n[consensus]\nblock_part_size = 64" >> ~/.tendermint/config.toml
+	cat ~/.tendermint/genesis.json | jq '. + {consensus_params: {block_size_params: {max_bytes: 22020096}, block_gossip_params: {block_part_size_bytes: 512}}}' > ~/.tendermint/new_genesis.json
+	mv ~/.tendermint/new_genesis.json ~/.tendermint/genesis.json
 	bash scripts/txs/random.sh 1000 36657 &> /dev/null &
 	PID=$!
 	tendermint node --proxy_app=persistent_dummy &> /dev/null &

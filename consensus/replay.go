@@ -2,6 +2,7 @@ package consensus
 
 import (
 	"bytes"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"hash/crc32"
@@ -39,27 +40,40 @@ var crc32c = crc32.MakeTable(crc32.Castagnoli)
 // Lines that start with "#" are ignored.
 // NOTE: receiveRoutine should not be running
 func (cs *ConsensusState) readReplayMessage(msgBytes []byte, newStepCh chan interface{}) error {
+	msgSize := len(msgBytes)
 	// Skip over empty and meta lines
-	if len(msgBytes) == 0 || msgBytes[0] == '#' {
+	if msgSize == 0 || msgBytes[0] == '#' {
 		return nil
 	}
-	var err error
+	if msgSize <= 8 {
+		return fmt.Errorf("Message is too small: %d", msgSize)
+	}
+	// read checksum
+	var gotCRC uint32
+	err := binary.Read(bytes.NewBuffer(msgBytes[0:4]), binary.BigEndian, &gotCRC)
+	if err != nil {
+		return fmt.Errorf("Failed to read checksum: %v", err)
+	}
+	// read length header
+	var length uint32
+	err = binary.Read(bytes.NewBuffer(msgBytes[4:8]), binary.BigEndian, &length)
+	if err != nil {
+		return fmt.Errorf("Failed to read checksum: %v", err)
+	}
+	// check we have enough bytes
+	if length > uint32(msgSize-8) {
+		return fmt.Errorf("Actual data size is less than declared (actual: %d, declared: %d)", msgSize-8, length)
+	}
 	var msg TimedWALMessage
-	wire.ReadJSON(&msg, msgBytes, &err)
+	err = wire.ReadBinaryBytes(msgBytes[8:length], &msg)
 	if err != nil {
 		fmt.Println("MsgBytes:", msgBytes, string(msgBytes))
 		return fmt.Errorf("Error reading json data: %v", err)
 	}
 	// check checksum
-	innerMsgBytes := wire.JSONBytes(msg.Msg)
-	crc := crc32.Checksum(innerMsgBytes, crc32c)
-	if crc != msg.CRC {
-		return fmt.Errorf("Checksums do not match. Original: %v, but calculated: %v", msg.CRC, crc)
-	}
-	// check msg size (optional)
-	msgSize := uint32(len(innerMsgBytes))
-	if msgSize != msg.MsgSize {
-		return fmt.Errorf("Sizes do not match. Original: %v, but calculated: %v", msg.MsgSize, msgSize)
+	wantCRC := crc32.Checksum(msgBytes[8:length], crc32c)
+	if wantCRC != gotCRC {
+		return fmt.Errorf("Checksums do not match. Original: %v, but calculated: %v", gotCRC, wantCRC)
 	}
 
 	// for logging
